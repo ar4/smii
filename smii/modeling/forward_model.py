@@ -1,4 +1,3 @@
-import numpy as np
 from smii.modeling.store_wavefield.in_memory import InMemory
 from smii.modeling.record_receivers.nearest_cell import NearestCell
 

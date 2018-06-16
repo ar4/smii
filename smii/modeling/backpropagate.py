@@ -1,5 +1,3 @@
-import numpy as np
-
 def backpropagate(propagator, image, stored_source_wavefield):
 
     for step in reversed(range(1, propagator.timestep.num_steps)):
