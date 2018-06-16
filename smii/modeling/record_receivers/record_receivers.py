@@ -7,8 +7,8 @@ class RecordReceivers(object):
             receiver_locations = np.array([], np.int)
         self.receiver_locations = receiver_locations
         num_steps = propagator.timestep.num_steps
-        num_receivers = len(receiver_locations)
-        self.receivers = np.zeros([num_receivers, num_steps], np.float32)
+        num_receivers = receiver_locations.shape[:-1]
+        self.receivers = np.zeros(num_receivers + (num_steps, ), np.float32)
         self.step = 0
 
     def record(self, wavefield, step):

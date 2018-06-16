@@ -1,32 +1,49 @@
 """Wave equation propagator.
 """
-import copy
 import numpy as np
-from smii.modeling.propagators import (libscalar1d, libscalar1d16,
-                                       libscalar2d)
+from smii.modeling.propagators import (libscalar1d, libscalar2d)
 
 class ScalarPropagator(object):
     """A scalar wave equation propagator object."""
-    def __init__(self, model, dx, source_dt, pad_width, source=None,
-                 num_steps=None, pml_width=None):
+    def __init__(self, model, dx, source_dt, sources, pad_width,
+                 pml_width=None):
+        """A scalar wave equation propagator base class.
 
-        self.source = Source(source, source_dt)
-        self.geometry = Geometry(model.shape, dx, pad_width, pml_width)
-        self.timestep = Timestep(np.max(model), dx, self.source, num_steps)
+        Arguments:
+            model: An array containing wave speed
+            dx: A float specifying cell size
+            source_dt: A float specifying source time step size
+            sources: A dictionary containing two keys:
+                     'amplitude': [num_shots, num_sources_per_shot, nt]
+                                  array
+                     'location': [num_shots, num_sources_per_shot, ndim]
+                                 array
+            pad_width: An int specifying the padding to add around the
+                       computational domain
+            pml_width: An int specifying the number of cells of padding to be
+                       added around the model for the PML
+        """
+
+        self.sources = Sources(sources, source_dt)
+        self.geometry = Geometry(model.shape, dx, pad_width, pml_width,
+                                 self.sources.num_shots,
+                                 self.sources.num_sources_per_shot,
+                                 self.sources.ndim)
+        self.sources.add_padding(self.geometry.total_pad)
+        self.timestep = Timestep(np.max(model), dx, self.sources.num_steps,
+                                 self.sources.dt)
         self.pml = Pml(self.geometry, np.max(model))
         self.model = Model(self.geometry, self.timestep, vp=model)
         self.wavefield = Wavefield(self.geometry)
 
-    def step(self):
+    def step(self, num_steps=1):
         raise NotImplementedError
 
-    def _step_setup(self, num_steps, source):
-        if source is None:
-            source = self.source.step_range(self.timestep.step_idx, num_steps)
-        else:
-            source = Source(source, self.source.dt)
-        source.locations = source.locations + self.geometry.total_pad
-        return source
+    def _step_setup(self, num_steps):
+        sources = {'amplitude': self.sources.step_range(self.timestep.step_idx,
+                                                        num_steps),
+                   'locations': self.sources.padded_locations}
+        return sources
 
     def _update_pointers(self, num_steps):
         if (num_steps * self.timestep.step_ratio)%2 != 0:
@@ -36,44 +53,62 @@ class ScalarPropagator(object):
                 phi.current, phi.previous = phi.previous, phi.current
 
 
-class Source(object):
-    def __init__(self, source, source_dt):
-        self.amplitude = source['amplitude']
-        self.locations = source['locations']
+class Sources(object):
+    def __init__(self, sources, source_dt):
+        self.amplitude = sources['amplitude']
+        self.locations = sources['locations']
         self.dt = source_dt
+        self.num_shots = self.amplitude.shape[0]
+        self.num_sources_per_shot = self.amplitude.shape[1]
+        self.num_steps = self.amplitude.shape[2]
+        self.ndim = self.locations.shape[2]
+
+    def add_padding(self, total_pad):
+        self.padded_locations = self.locations + total_pad
 
     def step_range(self, start_step, num_steps):
-        source = copy.copy(self)
-        source.amplitude = \
-                source.amplitude[:, start_step : start_step + num_steps]
-        return source
+        return self.amplitude[..., start_step : start_step + num_steps]
 
 
 class Geometry(object):
-    def __init__(self, shape, dx, pad_width, pml_width):
+    def __init__(self, model_shape, dx, pad_width, pml_width, num_shots,
+                 num_sources_per_shot, ndim):
 
         if pml_width is None:
             pml_width = 10
 
-        self.shape = shape
         self.dx = dx
         self.pad_width = pad_width
         self.pml_width = pml_width
         self.total_pad = self.pml_width + self.pad_width
-        self.ndim = len(self.shape)
-        self.shape_padded = np.array(self.shape) + 2 * self.total_pad
+        self.ndim = len(model_shape)
+        assert self.ndim == ndim, ('{} != {}, shape of model and number of '
+                                   'dimensions in source locations do not '
+                                   'match.'.format(self.ndim, ndim))
 
+        # Make a list of shot indices to use when adding sources to the
+        # wavefield. [num_shots, num_sources_per_shot]. For 2 shots
+        # with 3 sources per shot: [[0, 0, 0], [1, 1, 1]]
+        self.shotidx = np.arange(num_shots).reshape(-1, 1)\
+                                           .repeat(num_sources_per_shot,
+                                                   axis=1)
+
+        self.model_shape = list(model_shape)
+        self.model_shape_padded = [d + 2 * self.total_pad
+                                   for d in self.model_shape]
+
+        self.propagation_shape = [num_shots] + self.model_shape
+        self.propagation_shape_padded = ([num_shots]
+                                         + self.model_shape_padded)
 
 class Timestep(object):
-    def __init__(self, max_vel, dx, source, num_steps):
+    def __init__(self, max_vel, dx, num_steps, source_dt):
 
         self.num_steps = num_steps
-        if num_steps is None and source.amplitude is not None:
-            self.num_steps = source.amplitude.shape[-1]
 
         max_dt = 0.6 * dx / max_vel
-        self.step_ratio = int(np.ceil(source.dt / max_dt))
-        self.dt = source.dt / self.step_ratio
+        self.step_ratio = int(np.ceil(source_dt / max_dt))
+        self.dt = source_dt / self.step_ratio
         self.step_idx = 0
 
 
@@ -88,15 +123,16 @@ class Pml(object):
         self.phi = [Wavefield(geometry) for dim in range(geometry.ndim)]
 
     def _set_sigma(self, geometry, profile):
-        sigma = np.zeros(geometry.ndim, np.object)
         total_pad = geometry.total_pad
         pad_width = geometry.pad_width
-        for dim in range(len(sigma)):
-            sigma[dim] = np.zeros(geometry.shape_padded[dim], np.float32)
-            sigma[dim][total_pad-1:pad_width-1:-1] = profile
-            sigma[dim][-total_pad:-pad_width] = profile
-            sigma[dim][:pad_width] = sigma[dim][pad_width]
-            sigma[dim][-pad_width:] = sigma[dim][-pad_width-1]
+        sigma = []
+        for dim in range(geometry.ndim):
+            sigma_dim = np.zeros(geometry.model_shape_padded[dim], np.float32)
+            sigma_dim[total_pad-1:pad_width-1:-1] = profile
+            sigma_dim[-total_pad:-pad_width] = profile
+            sigma_dim[:pad_width] = sigma_dim[pad_width]
+            sigma_dim[-pad_width:] = sigma_dim[-pad_width-1]
+            sigma.append(sigma_dim)
         return sigma
 
 
@@ -113,7 +149,7 @@ class Model(object):
 
 class Wavefield(object):
     def __init__(self, geometry):
-        shape = geometry.shape_padded
+        shape = geometry.propagation_shape_padded
         self.current, self.previous = [np.zeros(shape, np.float32),
                                        np.zeros(shape, np.float32)]
         self._inner_slice = [slice(geometry.total_pad, -geometry.total_pad)] \
@@ -121,20 +157,20 @@ class Wavefield(object):
 
     @property
     def inner(self):
-        return self.current[self._inner_slice]
+        return self.current[[...] + self._inner_slice]
 
 
 class Scalar1D(ScalarPropagator):
     """1D scalar wave propagator."""
-    def __init__(self, model, dx, source_dt, source=None, pml_width=None):
-        pad_width = 3
-        super(Scalar1D, self).__init__(model, dx, source_dt, pad_width,
-                                       source=source, pml_width=pml_width)
+    def __init__(self, model, dx, source_dt, sources, pml_width=None):
+        pad_width = 2
+        super(Scalar1D, self).__init__(model, dx, source_dt, sources,
+                                       pad_width, pml_width=pml_width)
 
-    def step(self, num_steps=1, source=None):
+    def step(self, num_steps=1):
         """Propagate wavefield."""
 
-        source = self._step_setup(num_steps, source)
+        sources = self._step_setup(num_steps)
 
         libscalar1d.scalar1d.step(self.wavefield.current.T,
                                   self.wavefield.previous.T,
@@ -143,8 +179,8 @@ class Scalar1D(ScalarPropagator):
                                   self.pml.sigma[0].T,
                                   self.model.padded_property['vp2dt2'].T,
                                   self.geometry.dx, self.timestep.dt,
-                                  source.amplitude.T,
-                                  source.locations.T, num_steps,
+                                  sources['amplitude'].T,
+                                  sources['locations'].T, num_steps,
                                   self.geometry.pml_width,
                                   self.timestep.step_ratio)
 
@@ -155,48 +191,17 @@ class Scalar1D(ScalarPropagator):
         return self.wavefield.inner
 
 
-class Scalar1D_16(ScalarPropagator):
-    """1D scalar wave propagator."""
-    def __init__(self, model, dx, source_dt, source=None, pml_width=None):
-        pad_width = 8
-        super(Scalar1D_16, self).__init__(model, dx, source_dt, pad_width,
-                                          source=source, pml_width=pml_width)
-
-    def step(self, num_steps=1, source=None):
-        """Propagate wavefield."""
-
-        source = self._step_setup(num_steps, source)
-
-        libscalar1d16.scalar1d16.step(self.wavefield.current.T,
-                                      self.wavefield.previous.T,
-                                      self.pml.phi[0].current.T,
-                                      self.pml.phi[0].previous.T,
-                                      self.pml.sigma[0].T,
-                                      self.model.padded_property['vp2dt2'].T,
-                                      self.geometry.dx, self.timestep.dt,
-                                      source.amplitude.T,
-                                      source.locations.T, num_steps,
-                                      self.geometry.pml_width,
-                                      self.timestep.step_ratio)
-
-        self._update_pointers(num_steps)
-
-        self.timestep.step_idx += num_steps
-
-        return self.wavefield.inner
-
-
 class Scalar2D(ScalarPropagator):
     """2D scalar wave propagator."""
-    def __init__(self, model, dx, source_dt, source=None, pml_width=None):
-        pad_width = 3
-        super(Scalar2D, self).__init__(model, dx, source_dt, pad_width,
-                                       source=source, pml_width=pml_width)
+    def __init__(self, model, dx, source_dt, sources, pml_width=None):
+        pad_width = 2
+        super(Scalar2D, self).__init__(model, dx, source_dt, sources,
+                                       pad_width, pml_width=pml_width)
 
-    def step(self, num_steps=1, source=None):
+    def step(self, num_steps=1):
         """Propagate wavefield."""
 
-        source = self._step_setup(num_steps, source)
+        sources = self._step_setup(num_steps)
 
         libscalar2d.scalar2d.step(self.wavefield.current.T,
                                   self.wavefield.previous.T,
@@ -207,10 +212,9 @@ class Scalar2D(ScalarPropagator):
                                   self.pml.sigma[1].T,
                                   self.pml.sigma[0].T,
                                   self.model.padded_property['vp2dt2'].T,
-                                  self.geometry.shape[1],
                                   self.geometry.dx, self.timestep.dt,
-                                  source.amplitude.T,
-                                  source.locations.T, num_steps,
+                                  sources['amplitude'].T,
+                                  sources['locations'].T, num_steps,
                                   self.geometry.pml_width,
                                   self.timestep.step_ratio)
 

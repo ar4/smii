@@ -12,9 +12,16 @@ class NearestCell(RecordReceivers):
         if step is None:
             step = self.step
 
-        if self.receiver_locations.shape[1] == 1:
-            self.receivers[:, step] = wavefield[self.receiver_locations]
-        elif self.receiver_locations.shape[1] == 2:
-            self.receivers[:, step] = wavefield[self.receiver_locations[:, 0],
-                                                self.receiver_locations[:, 1]]
+        if self.receiver_locations.shape[-1] == 1:
+            for shotidx in range(wavefield.shape[0]):
+                self.receivers[shotidx, :, step] = \
+                        wavefield[shotidx,
+                                  self.receiver_locations[shotidx, :, 0]]
+
+        elif self.receiver_locations.shape[-1] == 2:
+            for shotidx in range(wavefield.shape[0]):
+                self.receivers[shotidx, :, step] = \
+                        wavefield[shotidx,
+                                  self.receiver_locations[shotidx, :, 0],
+                                  self.receiver_locations[shotidx, :, 1]]
         self.step = step + 1

@@ -3,10 +3,10 @@ import numpy as np
 import scipy.special
 import scipy.integrate
 from scipy.ndimage.interpolation import shift
-from smii.modeling.propagators.propagators import (Scalar1D_16, Scalar2D)
+from smii.modeling.propagators.propagators import (Scalar1D, Scalar2D)
 from smii.modeling.wavelets.wavelets import ricker
 from smii.modeling.forward_model import forward_model
-from smii.inversion.fwi import fun
+from smii.inversion.fwi import costjac
 
 def direct_1d(x, x_s, dx, dt, c, f):
     """Use the 1D Green's function to determine the wavefield at a given
@@ -120,23 +120,23 @@ def grad_2d(nx, x_r, x_s, x_p, dx, dt, c, dc, f):
 def grad_1d_fd(model_true, model_init, x_r, x_s, dx, dt, dc, f):
     x_r_idx, x_s_idx = (np.array([x_r, x_s]) / dx).astype(np.int)
     source, receiver_locations = _make_source_receiver(x_s_idx, x_r_idx, f)
-    propagator = Scalar1D_16(model_true, dx, dt, source, pml_width=30)
+    propagator = Scalar1D(model_true, dx, dt, source, pml_width=30)
     true_data, _ = forward_model(propagator, receiver_locations)
     receiver = {}
     receiver['amplitude'] = true_data.receivers
     receiver['locations'] = receiver_locations
     dataset = [(source, receiver)]
-    propagator = Scalar1D_16
-    init_cost, fwi_grad = fun(model_init, dataset, dx, dt, propagator,
-                              model_init.shape, compute_grad=True)
+    propagator = Scalar1D
+    init_cost, fwi_grad = costjac(model_init, dataset, dx, dt, propagator,
+                                  model_init.shape, compute_grad=True)
 
     nx = len(model_true)
     true_grad = np.zeros(nx, np.float32)
     for x_idx in range(nx):
         tmp_model = model_init.copy()
         tmp_model[x_idx] += dc
-        new_cost, _ = fun(tmp_model, dataset, dx, dt, propagator,
-                          model_init.shape, compute_grad=False)
+        new_cost, _ = costjac(tmp_model, dataset, dx, dt, propagator,
+                              model_init.shape, compute_grad=False)
         true_grad[x_idx] = (new_cost - init_cost) / dc
     return fwi_grad, true_grad
 
@@ -151,25 +151,25 @@ def grad_2d_fd(model_true, model_init, x_r, x_s, dx, dt, dc, f):
     receiver['locations'] = receiver_locations
     dataset = [(source, receiver)]
     propagator = Scalar2D
-    init_cost, fwi_grad = fun(model_init, dataset, dx, dt, propagator,
-                              model_init.shape, compute_grad=True)
+    init_cost, fwi_grad = costjac(model_init, dataset, dx, dt, propagator,
+                                  model_init.shape, compute_grad=True)
 
     true_grad = np.zeros_like(model_true)
     for z_idx in range(model_true.shape[0]):
         for x_idx in range(model_true.shape[1]):
             tmp_model = model_init.copy()
             tmp_model[z_idx, x_idx] += dc
-            new_cost, _ = fun(tmp_model, dataset, dx, dt, propagator,
-                              model_init.shape, compute_grad=False)
+            new_cost, _ = costjac(tmp_model, dataset, dx, dt, propagator,
+                                  model_init.shape, compute_grad=False)
             true_grad[z_idx, x_idx] = (new_cost - init_cost) / dc
     return fwi_grad, true_grad
 
 
 def _make_source_receiver(x_s_idx, x_r_idx, f):
     source = {}
-    source['amplitude'] = f[np.newaxis, :]
-    source['locations'] = np.array(x_s_idx)
-    receiver_locations = np.array(x_r_idx)
+    source['amplitude'] = f.reshape(1, 1, -1)
+    source['locations'] = x_s_idx.reshape(1, 1, -1)
+    receiver_locations = x_r_idx.reshape(1, 1, -1)
     return source, receiver_locations
 
 
@@ -192,7 +192,7 @@ def model_direct_1d(c=1500, freq=25, dx=5, dt=0.0001, nx=80):
     expected = direct_1d(x_r, x_s, dx, dt, c, f)
 
     source, receiver_locations = _make_source_receiver(x_s_idx, x_r_idx, f)
-    propagator = Scalar1D_16(model, dx, dt, source)
+    propagator = Scalar1D(model, dx, dt, source)
 
     actual, _ = forward_model(propagator, receiver_locations)
 
@@ -239,7 +239,7 @@ def model_scatter_1d(c=1500, dc=50, freq=25, dx=5, dt=0.0001, nx=100):
     expected = scattered_1d(x_r, x_s, x_p, dx, dt, c, dc, f)
 
     source, receiver_locations = _make_source_receiver(x_s_idx, x_r_idx, f)
-    propagator = Scalar1D_16(model, dx, dt, source)
+    propagator = Scalar1D(model, dx, dt, source)
 
     actual, _ = forward_model(propagator, receiver_locations)
 
@@ -270,80 +270,6 @@ def model_scatter_2d(c=1500, dc=150, freq=25, dx=5, dt=0.0001, nx=[50, 50]):
     actual, _ = forward_model(propagator, receiver_locations)
 
     return expected, actual.receivers.ravel()
-
-
-def test_direct_1d():
-    expected, actual = model_direct_1d()
-    assert np.allclose(expected, actual, atol=0.21)
-
-
-def test_direct_2d():
-    expected, actual = model_direct_2d()
-    assert np.allclose(expected, actual, atol=1)
-
-
-def test_scatter_1d():
-    expected, actual = model_scatter_1d()
-    assert np.allclose(expected, actual, atol=1)
-
-
-
-def test_scatter_1d2(dx=5, dt=0.0001, v0=1500, dv=50, freq=25):
-    """Create a constant model with one point scatterer, and the expected
-    waveform at a point in a manner than depends nonlinearly on the
-    scattering amplitude, and in an approximate linearised manner on it,
-    and compare both with the forward propagated wave.
-    """
-    nx = 100
-    scatter_x = 80
-    model_const = np.ones(nx, np.float32) * v0
-    model_scatter = model_const.copy()
-    model_scatter[scatter_x] = v0 + dv
-    nt = int((3 * scatter_x * dx / v0 + 0.1) / dt)
-
-    x_s, x_s_idx = _set_coords([[1]], dx)
-    x_r, x_r_idx = _set_coords([[1]], dx)
-    x_p, x_p_idx = _set_coords([[scatter_x]], dx)
-    f = ricker(freq, nt, dt, 0.05)
-
-    source, receiver_locations = _make_source_receiver(x_s_idx, x_r_idx, f)
-    propagator = Scalar1D_16(model_scatter, dx, dt, source)
-    actual, _ = forward_model(propagator, receiver_locations)
-    actual = actual.receivers.ravel()[1:-1]
-
-
-    propagator = Scalar1D_16(model_const, dx, dt, source)
-    d_sc, _ = forward_model(propagator, x_p_idx)
-    d_sc = d_sc.receivers.ravel()
-
-    d2d_scdt2 = (d_sc[:-2] - 2*d_sc[1:-1] + d_sc[2:])/dt**2
-    sc_d_sc_nonlinear = -d2d_scdt2 * (v0**2 / (v0 + dv)**2 - 1) / v0**2
-    sc_d_sc_linear = d2d_scdt2 * 2 * dv / v0**3
-
-    source, receiver_locations = _make_source_receiver(x_p_idx, x_r_idx,
-                                                       sc_d_sc_nonlinear)
-    propagator = Scalar1D_16(model_const, dx, dt, source)
-    expected_nonlinear, _ = forward_model(propagator, receiver_locations)
-    expected_nonlinear = expected_nonlinear.receivers.ravel()
-
-    source, receiver_locations = _make_source_receiver(x_p_idx, x_r_idx,
-                                                       sc_d_sc_linear)
-    propagator = Scalar1D_16(model_const, dx, dt, source)
-    expected_linear, _ = forward_model(propagator, receiver_locations)
-    expected_linear = expected_linear.receivers.ravel()
-
-
-    expected = scattered_1d(x_r, x_s, x_p, dx, dt, v0, dv, f)
-
-    return expected_nonlinear, expected_linear, actual, expected
-    # The "expected" waveforms do not include the direct wave, so only
-    # compare the later half of the waveforms (which should only include
-    # the scattered arrival).
-    st = nt//2
-    assert np.allclose(expected_nonlinear.ravel()[st:], actual.ravel()[st:],
-                       atol=0.04)
-    assert np.allclose(expected_linear.ravel()[st:], actual.ravel()[st:],
-                       atol=0.04)
 
 
 def model_grad_const_1d(c=1500, dc=1, freq=25, dx=5, dt=0.0001, nx=100):

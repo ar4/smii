@@ -5,20 +5,40 @@ from smii.modeling.imaging_condition.zero_lag_xcor import ZeroLagXcor
 from smii.modeling.forward_model import forward_model
 from smii.modeling.backpropagate import backpropagate
 
-def fwi(model, dataset, dx, dt, maxiter=1, propagator=None,
-        loss_file=None, true_model=None):
+def fwi(model, dataset, dx, dt, propagator, maxiter=1,
+        loss_file=None, true_model=None, bounds=None):
+    """Update model using FWI to better match dataset.
 
-    if propagator is None:
-        if model.ndim == 1:
-            propagator = Scalar1D
-        elif model.ndim == 2:
-            propagator = Scalar2D
-        else:
-            raise ValueError
+    Arguments:
+        model: An array containing wave speed.
+        dataset: An iterable that returns a batch of sources
+                 and receivers.
+                 Both of these must be dictionaries that contain:
+                    'amplitude': A [batch_size, num_per_shot, nt] array
+                    'locations': A [batch_size, num_per_shot, ndim] array
+        dx: A float specifying cell size.
+        dt: A float specifying source time step size.
+        propagator: The propagator class to use.
+        maxiter: An int specifying the number of optimizer iterations to
+                 perform. Optional - default 1.
+        loss_file: The path to a file where the data and model cost will be
+                   stored each time they are evaluated. Optional.
+        true_model: An array containing the true wave speed model,
+                    which will be used to calculate the model error for each
+                    model considered. Optional.
+        bounds: A tuple containing the minimum and maximum allowable wave
+                speeds. Optional.
+
+    Returns:
+        The final model
+    """
     
     if loss_file is not None:
         loss_file = open(loss_file, 'w')
         loss_file.write('data_cost, model_cost\n')
+
+    if bounds is not None:
+        bounds = [bounds] * len(model.ravel())
     
     # Optimisation
     opt = scipy.optimize.minimize(costjac,
@@ -26,7 +46,7 @@ def fwi(model, dataset, dx, dt, maxiter=1, propagator=None,
                                   args=(dataset, dx, dt, propagator,
                                         model.shape, loss_file, true_model),
                                   jac=True,
-                                  bounds=[(1450, 5000)] * len(model.ravel()),
+                                  bounds=bounds,
                                   options={'maxiter': maxiter,
                                            'disp': True},
                                   tol=1e-20,
@@ -34,11 +54,11 @@ def fwi(model, dataset, dx, dt, maxiter=1, propagator=None,
 
     if loss_file is not None:
         loss_file.close()
-    return opt
+    return opt.x
 
 
 def costjac(x, dataset, dx, dt, propagator, shape, loss_file=None,
-            true_model=None, compute_grad=True, scale_cost=False):
+            true_model=None, compute_grad=True):
 
     model = x.reshape(shape)
     
@@ -47,9 +67,9 @@ def costjac(x, dataset, dx, dt, propagator, shape, loss_file=None,
     jac = np.zeros(model.shape, np.float32)
     total_cost = 0.0
     
-    for source, receivers in dataset:
+    for sources, receivers in dataset:
         # Forward
-        prop = propagator(model, dx, dt, source, pml_width=30)
+        prop = propagator(model, dx, dt, sources, pml_width=30)
         recorded_receivers, stored_source_wavefield = \
                 forward_model(prop, receivers['locations'],
                               record_receivers=True,
@@ -59,14 +79,8 @@ def costjac(x, dataset, dx, dt, propagator, shape, loss_file=None,
         residual['amplitude'] = \
                 recorded_receivers.receivers - receivers['amplitude']
         residual['locations'] = receivers['locations'].copy()
-        if scale_cost: # scale residual by time**2
-            nt = residual['amplitude'].shape[1]
-            cost = float(dt * 0.5
-                         * np.linalg.norm((np.arange(0, nt*dt, dt)**2
-                                           * residual['amplitude']).ravel())**2)
-        else:
-            cost = float(dt * 0.5
-                         * np.linalg.norm(residual['amplitude'].ravel())**2)
+        cost = float(dt * 0.5
+                     * np.linalg.norm(residual['amplitude'].ravel())**2)
         total_cost += cost
     
         if compute_grad:
@@ -74,11 +88,11 @@ def costjac(x, dataset, dx, dt, propagator, shape, loss_file=None,
             _second_time_derivative(stored_source_wavefield, model, dt)
         
             # Backpropagation
-            residual['amplitude'] = residual['amplitude'][:, ::-1]
+            residual['amplitude'] = residual['amplitude'][..., ::-1]
             prop = propagator(model, dx, dt, residual, pml_width=30)
-            shot_jac = imaging_condition(prop.geometry.shape, dt)
-            jac += backpropagate(prop, shot_jac,
-                                 stored_source_wavefield)
+            batch_jac = imaging_condition(prop.geometry.propagation_shape, dt)
+            jac += backpropagate(prop, batch_jac,
+                                 stored_source_wavefield).sum(axis=0)
     
     jac *= 2 / model**3
 
