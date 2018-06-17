@@ -6,7 +6,7 @@ def configuration(parent_package='', top_path=None):
     config.add_subpackage('imaging')
     config.add_subpackage('inversion')
     config.add_data_dir('test')
-    config.make_config_py()
+    #config.make_config_py()
     return config
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 MAJOR               = 0
 MINOR               = 0
-MICRO               = 1
+MICRO               = 2
 VERSION             = '%d.%d.%d' % (MAJOR, MINOR, MICRO)
 FULLVERSION = VERSION
 
@@ -31,6 +31,7 @@ def configuration(parent_package='', top_path=None):
                        quiet=True)
     config.add_subpackage('smii')
     config.add_data_files(('smii', 'LICENSE'))
+    config.add_data_files(('smii', 'README.md'))
     config.get_version('smii/version.py')
     return config
 
@@ -40,5 +41,5 @@ if __name__ == "__main__":
     setup(configuration=configuration,
           author='Alan Richardson',
           author_email='alan@ausargeo.com',
-          url='https://www.ausargeo.com',
+          url='https://github.com/ar4/smii',
           name='smii')
