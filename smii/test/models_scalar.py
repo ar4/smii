@@ -117,18 +117,23 @@ def grad_2d(nx, x_r, x_s, x_p, dx, dt, c, dc, f):
     return grad
 
 
-def grad_1d_fd(model_true, model_init, x_r, x_s, dx, dt, dc, f):
+def grad_1d_fd(model_true, model_init, x_r, x_s, dx, dt, dc, f,
+               propagator=None, prop_kwargs=None):
     x_r_idx, x_s_idx = (np.array([x_r, x_s]) / dx).astype(np.int)
     source, receiver_locations = _make_source_receiver(x_s_idx, x_r_idx, f)
-    propagator = Scalar1D(model_true, dx, dt, source, pml_width=30)
-    true_data, _ = forward_model(propagator, receiver_locations)
+    if propagator is None:
+        propagator = Scalar1D
+    if prop_kwargs is None:
+        prop_kwargs = {}
+    prop = propagator(model_true, dx, dt, source, **prop_kwargs)
+    true_data, _ = forward_model(prop, receiver_locations)
     receiver = {}
     receiver['amplitude'] = true_data.receivers
     receiver['locations'] = receiver_locations
     dataset = [(source, receiver)]
-    propagator = Scalar1D
     init_cost, fwi_grad = costjac(model_init, dataset, dx, dt, propagator,
-                                  model_init.shape, compute_grad=True)
+                                  model_init.shape, compute_grad=True,
+                                  prop_kwargs=prop_kwargs)
 
     nx = len(model_true)
     true_grad = np.zeros(nx, np.float32)
@@ -136,23 +141,29 @@ def grad_1d_fd(model_true, model_init, x_r, x_s, dx, dt, dc, f):
         tmp_model = model_init.copy()
         tmp_model[x_idx] += dc
         new_cost, _ = costjac(tmp_model, dataset, dx, dt, propagator,
-                              model_init.shape, compute_grad=False)
+                              model_init.shape, compute_grad=False,
+                              prop_kwargs=prop_kwargs)
         true_grad[x_idx] = (new_cost - init_cost) / dc
     return fwi_grad, true_grad
 
 
-def grad_2d_fd(model_true, model_init, x_r, x_s, dx, dt, dc, f):
+def grad_2d_fd(model_true, model_init, x_r, x_s, dx, dt, dc, f,
+               propagator=None, prop_kwargs=None):
     x_r_idx, x_s_idx = (np.array([x_r, x_s]) / dx).astype(np.int)
     source, receiver_locations = _make_source_receiver(x_s_idx, x_r_idx, f)
-    propagator = Scalar2D(model_true, dx, dt, source, pml_width=30)
+    if propagator is None:
+        propagator = Scalar2D
+    if prop_kwargs is None:
+        prop_kwargs = {}
+    prop = propagator(model_true, dx, dt, source, **prop_kwargs)
     true_data, _ = forward_model(propagator, receiver_locations)
     receiver = {}
     receiver['amplitude'] = true_data.receivers
     receiver['locations'] = receiver_locations
     dataset = [(source, receiver)]
-    propagator = Scalar2D
     init_cost, fwi_grad = costjac(model_init, dataset, dx, dt, propagator,
-                                  model_init.shape, compute_grad=True)
+                                  model_init.shape, compute_grad=True,
+                                  prop_kwargs=prop_kwargs)
 
     true_grad = np.zeros_like(model_true)
     for z_idx in range(model_true.shape[0]):
@@ -160,7 +171,8 @@ def grad_2d_fd(model_true, model_init, x_r, x_s, dx, dt, dc, f):
             tmp_model = model_init.copy()
             tmp_model[z_idx, x_idx] += dc
             new_cost, _ = costjac(tmp_model, dataset, dx, dt, propagator,
-                                  model_init.shape, compute_grad=False)
+                                  model_init.shape, compute_grad=False,
+                                  prop_kwargs=prop_kwargs)
             true_grad[z_idx, x_idx] = (new_cost - init_cost) / dc
     return fwi_grad, true_grad
 
@@ -178,7 +190,8 @@ def _set_coords(x, dx):
     x_idx = np.array(x)
     return x_m, x_idx
 
-def model_direct_1d(c=1500, freq=25, dx=5, dt=0.0001, nx=80):
+def model_direct_1d(c=1500, freq=25, dx=5, dt=0.0001, nx=80,
+                    propagator=None, prop_kwargs=None):
     """Create a constant model, and the expected waveform at point,
        and the forward propagated wave.
     """
@@ -192,14 +205,19 @@ def model_direct_1d(c=1500, freq=25, dx=5, dt=0.0001, nx=80):
     expected = direct_1d(x_r, x_s, dx, dt, c, f)
 
     source, receiver_locations = _make_source_receiver(x_s_idx, x_r_idx, f)
-    propagator = Scalar1D(model, dx, dt, source)
+    if propagator is None:
+        propagator = Scalar1D
+    if prop_kwargs is None:
+        prop_kwargs = {}
+    prop = propagator(model, dx, dt, source, **prop_kwargs)
 
-    actual, _ = forward_model(propagator, receiver_locations)
+    actual, _ = forward_model(prop, receiver_locations)
 
     return expected, actual.receivers.ravel()
 
 
-def model_direct_2d(c=1500, freq=25, dx=5, dt=0.0001, nx=[50, 50]):
+def model_direct_2d(c=1500, freq=25, dx=5, dt=0.0001, nx=[50, 50],
+                    propagator=None, prop_kwargs=None):
     """Create a constant model, and the expected waveform at point,
        and the forward propagated wave.
     """
@@ -215,14 +233,19 @@ def model_direct_2d(c=1500, freq=25, dx=5, dt=0.0001, nx=[50, 50]):
     expected = direct_2d_approx(x_r, x_s, dx, dt, c, f)
 
     source, receiver_locations = _make_source_receiver(x_s_idx, x_r_idx, f)
-    propagator = Scalar2D(model, dx, dt, source)
+    if propagator is None:
+        propagator = Scalar2D
+    if prop_kwargs is None:
+        prop_kwargs = {}
+    prop = propagator(model, dx, dt, source, **prop_kwargs)
 
-    actual, _ = forward_model(propagator, receiver_locations)
+    actual, _ = forward_model(prop, receiver_locations)
 
     return expected, actual.receivers.ravel()
 
 
-def model_scatter_1d(c=1500, dc=50, freq=25, dx=5, dt=0.0001, nx=100):
+def model_scatter_1d(c=1500, dc=50, freq=25, dx=5, dt=0.0001, nx=100,
+                     propagator=None, prop_kwargs=None):
     """Create a point scatterer model, and the expected waveform at point,
        and the forward propagated wave.
     """
@@ -239,14 +262,19 @@ def model_scatter_1d(c=1500, dc=50, freq=25, dx=5, dt=0.0001, nx=100):
     expected = scattered_1d(x_r, x_s, x_p, dx, dt, c, dc, f)
 
     source, receiver_locations = _make_source_receiver(x_s_idx, x_r_idx, f)
-    propagator = Scalar1D(model, dx, dt, source)
+    if propagator is None:
+        propagator = Scalar1D
+    if prop_kwargs is None:
+        prop_kwargs = {}
+    prop = propagator(model, dx, dt, source, **prop_kwargs)
 
-    actual, _ = forward_model(propagator, receiver_locations)
+    actual, _ = forward_model(prop, receiver_locations)
 
     return expected, actual.receivers.ravel()
 
 
-def model_scatter_2d(c=1500, dc=150, freq=25, dx=5, dt=0.0001, nx=[50, 50]):
+def model_scatter_2d(c=1500, dc=150, freq=25, dx=5, dt=0.0001, nx=[50, 50],
+                     propagator=None, prop_kwargs=None):
     """Create a point scatterer model, and the expected waveform at point,
        and the forward propagated wave.
     """
@@ -265,14 +293,19 @@ def model_scatter_2d(c=1500, dc=150, freq=25, dx=5, dt=0.0001, nx=[50, 50]):
     expected = scattered_2d(x_r, x_s, x_p, dx, dt, c, dc, f)
 
     source, receiver_locations = _make_source_receiver(x_s_idx, x_r_idx, f)
-    propagator = Scalar2D(model, dx, dt, source, pml_width=30)
+    if propagator is None:
+        propagator = Scalar2D
+    if prop_kwargs is None:
+        prop_kwargs = {}
+    prop = propagator(model, dx, dt, source, **prop_kwargs)
 
-    actual, _ = forward_model(propagator, receiver_locations)
+    actual, _ = forward_model(prop, receiver_locations)
 
     return expected, actual.receivers.ravel()
 
 
-def model_grad_const_1d(c=1500, dc=1, freq=25, dx=5, dt=0.0001, nx=100):
+def model_grad_const_1d(c=1500, dc=1, freq=25, dx=5, dt=0.0001, nx=100,
+                        propagator=None, prop_kwargs=None):
     """Create a point scatterer model, and the gradient.
     """
 
@@ -288,12 +321,13 @@ def model_grad_const_1d(c=1500, dc=1, freq=25, dx=5, dt=0.0001, nx=100):
 
     expected = grad_1d(nx, x_r, x_s, x_p, dx, dt, c, dc, f)
     fwi_grad, true_grad = grad_1d_fd(model_true, model_init, x_r, x_s, dx, dt,
-                                     dc, f)
+                                     dc, f, propagator, prop_kwargs)
 
     return expected, fwi_grad, true_grad
 
 
-def model_grad_const_2d(c=1500, dc=1, freq=25, dx=5, dt=0.0001, nx=[20, 20]):
+def model_grad_const_2d(c=1500, dc=1, freq=25, dx=5, dt=0.0001, nx=[20, 20],
+                        propagator=None, prop_kwargs=None):
     """Create a point scatterer model, and the gradient.
     """
 
@@ -310,13 +344,13 @@ def model_grad_const_2d(c=1500, dc=1, freq=25, dx=5, dt=0.0001, nx=[20, 20]):
 
     expected = grad_2d(nx, x_r, x_s, x_p, dx, dt, c, dc, f)
     fwi_grad, true_grad = grad_2d_fd(model_true, model_init, x_r, x_s, dx, dt,
-                                     dc, f)
+                                     dc, f, propagator, prop_kwargs)
 
     return expected, fwi_grad, true_grad
 
 
 def model_grad_rand_1d(c=2000, randc=100, dc=1, freq=25, dx=5, dt=0.0001,
-                       nx=100):
+                       nx=100, propagator=None, prop_kwargs=None):
     """Create a point scatterer model, and the gradient.
     """
 
@@ -331,13 +365,13 @@ def model_grad_rand_1d(c=2000, randc=100, dc=1, freq=25, dx=5, dt=0.0001,
     model_true += np.random.rand(nx).astype(np.float32) * dc
 
     fwi_grad, true_grad = grad_1d_fd(model_true, model_init, x_r, x_s, dx, dt,
-                                     dc, f)
+                                     dc, f, propagator, prop_kwargs)
 
     return fwi_grad, true_grad
 
 
 def model_grad_rand_2d(c=2000, randc=100, dc=1, freq=25, dx=5, dt=0.0001,
-                       nx=[20, 20]):
+                       nx=[20, 20], propagator=None, prop_kwargs=None):
     """Create a point scatterer model, and the gradient.
     """
 
@@ -353,7 +387,7 @@ def model_grad_rand_2d(c=2000, randc=100, dc=1, freq=25, dx=5, dt=0.0001,
     model_true += np.random.rand(nx[0], nx[1]).astype(np.float32) * dc
 
     fwi_grad, true_grad = grad_2d_fd(model_true, model_init, x_r, x_s, dx, dt,
-                                     dc, f)
+                                     dc, f, propagator, prop_kwargs)
 
     return fwi_grad, true_grad
 

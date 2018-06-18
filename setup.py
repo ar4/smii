@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 MAJOR               = 0
 MINOR               = 0
-MICRO               = 2
+MICRO               = 3
 VERSION             = '%d.%d.%d' % (MAJOR, MINOR, MICRO)
 FULLVERSION = VERSION
 
@@ -42,4 +42,5 @@ if __name__ == "__main__":
           author='Alan Richardson',
           author_email='alan@ausargeo.com',
           url='https://github.com/ar4/smii',
-          name='smii')
+          name='smii',
+          install_requires=['numpy', 'scipy', 'pycuda', 'pytest'])

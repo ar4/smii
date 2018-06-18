@@ -1,17 +1,23 @@
 """Create constant and point scatterer models."""
 from timeit import repeat
 import numpy as np
-from smii.modeling.propagators.propagators import (Scalar2D)
+import pytest
+from smii.modeling.propagators.propagators import Scalar2D as Scalar2Dcpu
+from smii.modeling.propagators.scalar2d_gpu import Scalar2D as Scalar2Dgpu
 from smii.modeling.wavelets.wavelets import ricker
 from smii.modeling.forward_model import forward_model
 from smii.test.models_scalar import direct_2d_approx
 
-def _versions():
-    return [{'name': 'Scalar2D', 'propagator': Scalar2D}]
-
+@pytest.fixture
+def _versions(cpuprop_kwargs, gpuprop_kwargs):
+    return [{'name': 'Scalar2Dcpu', 'propagator': Scalar2Dcpu,
+             'kwargs': cpuprop_kwargs},
+             {'name': 'Scalar2Dgpu', 'propagator': Scalar2Dgpu,
+             'kwargs': gpuprop_kwargs}]
 
 def _setup_propagator(c, freq, dx, dt, nt, nx, num_shots,
-                      num_sources_per_shot, num_receivers_per_shot):
+                      num_sources_per_shot, num_receivers_per_shot,
+                      prop_kwargs):
     model = np.ones(nx, np.float32) * c
 
     x_s_idx = np.ones([num_shots, num_sources_per_shot, 2], np.int)
@@ -29,7 +35,8 @@ def _setup_propagator(c, freq, dx, dt, nt, nx, num_shots,
     x_r_idx[:, :, 0] = nx[0] - 1
 
     prop_args = (model, dx, dt, source)
-    prop_kwargs = {'pml_width': 30}
+    if len(prop_kwargs) == 0:
+        prop_kwargs = {'pml_width': 30}
 
     return prop_args, prop_kwargs, x_r_idx
 
@@ -65,11 +72,8 @@ def time_version(propagator, prop_args, prop_kwargs, x_r_idx):
     return np.min(repeat(closure, number=1))
 
 
-def run_timing(c=1500, freq=25, dx=5, dt=0.005, nt=3000, nx=[64, 64],
-               num_shots=1, num_sources_per_shot=1, num_receivers_per_shot=1,
-               versions=None):
-    if versions is None:
-        versions = _versions()
+def run_timing(versions, c=1500, freq=25, dx=5, dt=0.005, nt=3000, nx=[64, 64],
+               num_shots=3, num_sources_per_shot=4, num_receivers_per_shot=5):
 
     timing = []
     for version in versions:
@@ -77,7 +81,8 @@ def run_timing(c=1500, freq=25, dx=5, dt=0.005, nt=3000, nx=[64, 64],
                 _setup_propagator(c, freq, dx, dt, nt, nx,
                                   num_shots,
                                   num_sources_per_shot,
-                                  num_receivers_per_shot)
+                                  num_receivers_per_shot,
+                                  version['kwargs'])
         runtime = time_version(version['propagator'], prop_args, prop_kwargs,
                                x_r_idx)
         timing.append({'name': version['name'], 'time': runtime})
@@ -85,11 +90,8 @@ def run_timing(c=1500, freq=25, dx=5, dt=0.005, nt=3000, nx=[64, 64],
     return timing
 
 
-def run_verify(c=1500, freq=25, dx=5, dt=0.005, nt=3000, nx=[64, 64],
-               num_shots=3, num_sources_per_shot=4, num_receivers_per_shot=5,
-               versions=None):
-    if versions is None:
-        versions = _versions()
+def run_verify(versions, c=1500, freq=25, dx=5, dt=0.005, nt=3000, nx=[64, 64],
+               num_shots=3, num_sources_per_shot=4, num_receivers_per_shot=5):
 
     o = []
     for version in versions:
@@ -97,14 +99,15 @@ def run_verify(c=1500, freq=25, dx=5, dt=0.005, nt=3000, nx=[64, 64],
                 _setup_propagator(c, freq, dx, dt, nt, nx,
                                   num_shots,
                                   num_sources_per_shot,
-                                  num_receivers_per_shot)
+                                  num_receivers_per_shot,
+                                  version['kwargs'])
         propagator = version['propagator'](*prop_args, **prop_kwargs)
         o.append(verify_version(propagator, x_r_idx))
     return o
 
 
-def test_verify():
-    o = run_verify()
+def test_verify(_versions):
+    o = run_verify(versions=_versions)
     assert np.linalg.norm((o[0][0] - o[0][1].receivers).ravel()) < 2
 
 

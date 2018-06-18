@@ -55,8 +55,8 @@ class ScalarPropagator(object):
 
 class Sources(object):
     def __init__(self, sources, source_dt):
-        self.amplitude = sources['amplitude']
-        self.locations = sources['locations']
+        self.amplitude = sources['amplitude'].astype(np.float32)
+        self.locations = sources['locations'].astype(np.int32)
         self.dt = source_dt
         self.num_shots = self.amplitude.shape[0]
         self.num_sources_per_shot = self.amplitude.shape[1]
@@ -100,6 +100,7 @@ class Geometry(object):
         self.propagation_shape = [num_shots] + self.model_shape
         self.propagation_shape_padded = ([num_shots]
                                          + self.model_shape_padded)
+
 
 class Timestep(object):
     def __init__(self, max_vel, dx, num_steps, source_dt):

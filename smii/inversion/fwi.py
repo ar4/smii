@@ -58,7 +58,7 @@ def fwi(model, dataset, dx, dt, propagator, maxiter=1,
 
 
 def costjac(x, dataset, dx, dt, propagator, shape, loss_file=None,
-            true_model=None, compute_grad=True):
+            true_model=None, compute_grad=True, prop_kwargs=None):
 
     model = x.reshape(shape)
     
@@ -66,10 +66,13 @@ def costjac(x, dataset, dx, dt, propagator, shape, loss_file=None,
     
     jac = np.zeros(model.shape, np.float32)
     total_cost = 0.0
+
+    if prop_kwargs is None:
+        prop_kwargs = {'pml_width': 30}
     
     for sources, receivers in dataset:
         # Forward
-        prop = propagator(model, dx, dt, sources, pml_width=30)
+        prop = propagator(model, dx, dt, sources, **prop_kwargs)
         recorded_receivers, stored_source_wavefield = \
                 forward_model(prop, receivers['locations'],
                               record_receivers=True,
@@ -89,7 +92,7 @@ def costjac(x, dataset, dx, dt, propagator, shape, loss_file=None,
         
             # Backpropagation
             residual['amplitude'] = residual['amplitude'][..., ::-1]
-            prop = propagator(model, dx, dt, residual, pml_width=30)
+            prop = propagator(model, dx, dt, residual, **prop_kwargs)
             batch_jac = imaging_condition(prop.geometry.propagation_shape, dt)
             jac += backpropagate(prop, batch_jac,
                                  stored_source_wavefield).sum(axis=0)
